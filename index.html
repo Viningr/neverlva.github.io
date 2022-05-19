@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta http-equiv="X-UA-Compatible" content="ie=edge">
+	<title>iFit/NordicTrack device manager</title>
+	<meta name="description" content="iFit/NordicTrack device manager">
+	<meta http-equiv="content-type" content="text/html;charset=UTF-8">
+
+	<script>
+		sservice = '00001533-1412-efde-1523-785feabcd123'
+		snotification_characteristic = '00001535-1412-efde-1523-785feabcd123'
+		scommands_characteristic = '00001534-1412-efde-1523-785feabcd123'
+		//
+		function pre_cmds_index()
+		{
+			if(document.getElementById('device_0').checked)
+				return 0;
+			if(document.getElementById('device_1').checked)
+				return 1;
+			return 1;
+		}
+		pre_cmds = [
+				['fe022c04', '0012020402280428900701cec4b0aaa2a8949696', '0112aca8a2bad0dccefe14003a52786486a6fc18', 'ff08324aa0880200004400000000000000000000'],
+				['fe022c04', '00120204022805289004005978a5c0e9104d78a9', '0112d8053079a0fd3879b8e52069d00d78a91845', 'ff08b01940800200003e00000000000000000000']
+		];
+
+		logindex = 0
+
+		function log(txt) {
+			txtarea = document.getElementById('txtarea')
+			txtarea.value = txtarea.value + "\r\n" + logindex.toString() + ": " + txt
+			logindex++;
+			txtarea.scrollTop = txtarea.scrollHeight;
+		}
+
+		function view2hex(view) {
+			var result = ''
+			for (var i = 0; i < view.byteLength; i++) {
+				result += ('0' + (view.getUint8(i) & 0xFF).toString(16)).slice(-2);
+			}
+			return result
+		}
+
+		function handleCharacteristicValueChanged(event) {
+			var value = event.target.value;
+			log("Value changed: " + view2hex(value));
+		}
+
+		function log_characteristic(characteristic) {
+			log("uuid: " + characteristic.uuid);
+			log("indicate: " + characteristic.properties.indicate);
+			log("notify: " + characteristic.properties.notify);
+			log("read: " + characteristic.properties.read);
+			log("reliableWrite: " + characteristic.properties.reliableWrite);
+			log("writableAuxiliaries: " + characteristic.properties.writableAuxiliaries);
+			log("write: " + characteristic.properties.write);
+			log("writeWithoutResponse: " + characteristic.properties.writeWithoutResponse);
+		}
+
+		function hex2array(str) {
+			var bytes = new Uint8Array(Math.ceil(str.length / 2));
+			for (var i = 0; i < bytes.length; i++)
+				bytes[i] = parseInt(str.substr(i * 2, 2), 16);
+			return bytes.buffer;
+		}
+
+		async function send_commands(cmds) {
+			for (const cmd of cmds) {
+				if(cmd.length == 8)
+					await new Promise(r => setTimeout(r, 50))
+				await commands_characteristic.writeValueWithResponse(hex2array(cmd));
+				log("Cmd sent: " + cmd);
+			};
+		}
+									 
+		var cmd_ping = [
+			["fe021703", "001202040213051302000d800a40000000000000", "ff05000000847500000000000000000000000000", "1000"],
+			["fe021703", "001202040213051302000d1b9431000040500080", "ff05180000013000000000000000000000000000", "1000"],
+		];
+		var cmd_ping_index = 0
+		var cmds_queue = []
+		async function add_cmds(cmds)
+		{
+			for (const cmd of cmds)
+			{
+				cmds_queue.push(cmd);
+			};
+		}
+
+		async function next_cmd()
+		{
+			if(cmds_queue.length == 0)
+			{
+				await add_cmds(cmd_ping[cmd_ping_index]);
+				cmd_ping_index++;
+				if(cmd_ping_index >= cmd_ping.length)
+					cmd_ping_index = 0;
+			}
+			return cmds_queue.shift()
+		}
+
+		var stop_ping = false;
+		async function ping()
+		{
+			while(!stop_ping)
+			{
+				cmd = await next_cmd();
+				if(cmd.length < 8)				
+					await new Promise(r => setTimeout(r, parseInt(cmd)))
+				else
+				{
+					await commands_characteristic.writeValueWithResponse(hex2array(cmd));
+					log("Cmd sent: " + cmd);
+				}
+			}
+		}
+
+		async function set_speed(value)
+		{
+			log("Set speed " + value.toString());
+			value *= 100
+			s = ('0' + (value & 0xFF).toString(16)).slice(-2);
+			s += ('0' + ((value >> 8) & 0xFF).toString(16)).slice(-2);
+			cmds = [
+				["fe020d02", "ff0d020402090409020101" + s + "00000000000000", "2000"],
+				["fe020d02", "ff0d020402090509020101" + s + "00000000000000", "2000"]
+			];
+			await add_cmds(cmds[pre_cmds_index()]);
+		}
+
+		async function set_incline(value)
+		{
+			log("Set incline " + value.toString());
+			value *= 100
+			s = ('0' + (value & 0xFF).toString(16)).slice(-2);
+			s += ('0' + ((value >> 8) & 0xFF).toString(16)).slice(-2);
+			cmds = [
+				["fe020d02", "ff0d020402090409020102" + s + "00000000000000", "2000"],
+				["fe020d02", "ff0d020402090509020102" + s + "00000000000000", "2000"]
+			];
+			await add_cmds(cmds[pre_cmds_index()]);
+		}
+
+		async function stop_run(value)
+		{
+			log("Call stop");
+			await set_speed(2);
+			await set_incline(0);
+			await new Promise(r => setTimeout(r, 3000))
+			cmds = ["fe020d02", "ff0d020402090509020200100400260000000000"]
+			await add_cmds(cmds);
+		}
+
+		var filterInt = function (value) 
+		{
+			if (/^(\-|\+)?([0-9]+|Infinity)$/.test(value))
+				return Number(value);
+			return NaN;
+		}
+
+		function set_program_error(command)
+		{
+			lblProgramError = document.getElementById('lblProgramError');
+			lblProgramError.innerHTML = "None";
+			if(command.length)
+			{
+				lblProgramError.innerHTML = "Invalid command '" + command + "'";
+				log(lblProgramError.innerHTML);
+			}
+		}
+
+		class ProgramCommand 
+		{
+			constructor(command, value) 
+			{
+				this.command = command;
+				this.value = value;
+			};
+		};
+
+		async function check_program()
+		{
+			log("Check program");
+			set_program_error('');
+			//check syntax
+			var sProgram = document.getElementById('program').value;
+			log(sProgram);
+			commands = sProgram.split(' ');
+			parsed_commands = []
+			for (const command of commands) {
+				if(command.length < 2)
+				{
+					set_program_error(command);
+					return [false, []];
+				}
+				switch(command[0])
+				{
+					case 's':
+					{
+						value = filterInt(command.substring(1), 10);
+						if (isNaN(value) || value == Infinity || (value < 1) || (value > 14))
+						{
+							set_program_error(command);
+							return [false, []];
+						}
+						parsed_commands.push(new ProgramCommand('s', value));
+						break;
+					}
+					case 'i':
+					{
+						value = filterInt(command.substring(1), 10);
+						if (isNaN(value) || value == Infinity || (value < 0) || (value > 40))
+						{
+							set_program_error(command);
+							return [false, []];
+						}
+						parsed_commands.push(new ProgramCommand('i', value));
+						break;
+					}
+					case 'd':
+					{
+						if(command.length < 3)
+						{
+							set_program_error(command);
+							return [false, []];
+						}
+						time_type = command.slice(-1);
+						if(time_type != 'm')
+						{
+							set_program_error(command);
+							return [false, []];
+						}
+						value = filterInt(command.slice(1, -1), 10);
+						if (isNaN(value) || value == Infinity || (value <= 0) || (value > 100))
+						{
+							set_program_error(command);
+							return [false, []];
+						}
+						parsed_commands.push(new ProgramCommand('d', value * 60 * 1000));
+						break;
+					}
+					default:
+					{
+						set_program_error(command);
+						return [false, []];
+					}
+				}
+			}
+			return [true, parsed_commands];
+		}
+
+		async function run_program()
+		{
+			check_result = await check_program();
+			if(!check_result[0])
+				return;
+			log("Run program, " + check_result[1].length + ' commands');
+			set_status("Running program...");
+			executed_commands = 0;
+			for (const command of check_result[1])
+			{
+				switch(command.command)
+				{
+					case 's':
+					{
+						await set_speed(command.value);
+						break;
+					}
+					case 'i':
+					{
+						await set_incline(command.value);
+						break;
+					}
+					case 'd':
+					{
+						log("wait for " + command.value + "ms");
+						await new Promise(r => setTimeout(r, command.value));
+						break;
+					}
+				}
+				executed_commands++;
+				set_status("Program executed by " + Math.round(100 * executed_commands / check_result[1].length * 100) / 100 + "%");
+			}
+			await stop_run();
+			set_status("Inactive");
+		}
+
+		window.onload = () => {
+			const button = document.getElementById('pair')
+			button.addEventListener('pointerup', function (event) {
+				set_status("Paring...");
+				log("Start pairing...")
+				log("Device to use:" + pre_cmds_index());
+				cmds_queue = [];
+				navigator.bluetooth.requestDevice({ filters: [{ services: [sservice] }] }).then((device) => {
+					device.addEventListener('gattserverdisconnected', function () { log('Disconnected'); });
+					return device.gatt.connect();
+				}).then(server => {
+					log("Connected: " + server)
+					return server.getPrimaryService(sservice);
+				}).then(service => {
+					log("Service got: " + service)
+					upper_service = service
+					return service.getCharacteristics();
+				}).then(characteristics => {
+					log("Characteristics got: " + characteristics)
+					for (const c of characteristics)
+					{
+						if (c.uuid == snotification_characteristic)
+							notification_characteristic = c;
+						if (c.uuid == scommands_characteristic)
+							commands_characteristic = c;
+					};
+					log_characteristic(notification_characteristic)
+					log_characteristic(commands_characteristic)
+					notification_characteristic.addEventListener(
+						'characteristicvaluechanged', handleCharacteristicValueChanged
+					);
+					return notification_characteristic.startNotifications();
+				}).then(none => {
+					log("Notification started, wait for 6 secs: " + notification_characteristic)
+					return new Promise(r => setTimeout(r, 6000))
+				}).then(async (none) => {
+					return add_cmds(cmd_ping);
+				}).then(async (none) => {
+					return send_commands(pre_cmds[pre_cmds_index()]);
+				}).then(async (none) => {
+					return ping();
+				}).catch(error => 
+				{ 
+					set_status("Error " + error);
+					log(error); 
+				});
+			});
+		}
+
+		function CopyText() {
+			/* Get the text field */
+			var copyText = document.getElementById("txtarea");
+
+			/* Select the text field */
+			copyText.select();
+			copyText.setSelectionRange(0, 99999); /* For mobile devices */
+
+			/* Copy the text inside the text field */
+			//navigator.clipboard.writeText(copyText.value);
+			document.execCommand('copy');
+		}		
+
+		function openTab(evt, tabName) {
+			// Declare all variables
+			var i, tabcontent, tablinks;
+
+			// Get all elements with class="tabcontent" and hide them
+			tabcontent = document.getElementsByClassName("tabcontent");
+			for (i = 0; i < tabcontent.length; i++) {
+				tabcontent[i].style.display = "none";
+			}
+
+			// Get all elements with class="tablinks" and remove the class "active"
+			tablinks = document.getElementsByClassName("tablinks");
+			for (i = 0; i < tablinks.length; i++) {
+				tablinks[i].className = tablinks[i].className.replace(" active", "");
+			}
+
+			// Show the current tab, and add an "active" class to the button that opened the tab
+			document.getElementById(tabName).style.display = "block";
+			document.getElementById(tabName + "Btn").className += " active";
+		}
+
+		async function copyToClipboard(text) 
+		{
+			const elem = document.createElement('textarea');
+			elem.value = text;
+			document.body.appendChild(elem);
+			elem.select();
+			elem.setSelectionRange(0, 99999); /* For mobile devices */
+			await document.execCommand('copy');
+			document.body.removeChild(elem);
+		}	
+
+		async function crypto_click(event)
+		{
+			let address = event.currentTarget.innerHTML;
+			//
+			await copyToClipboard(address);
+			//await navigator.clipboard.writeText(event.currentTarget.innerHTML);
+			el = document.getElementById("dialog_overlay");
+			dialog_text = document.getElementById("dialog_text");
+			dialog_text.innerHTML = "The address " + address + " has been copied to clipboard.";
+   			el.style.visibility = "visible";
+			await new Promise(r => setTimeout(r, 3000))	
+			el.style.visibility = "hidden";
+		}
+
+		function set_status(text)
+		{
+			status_text = document.getElementById("status_text");
+			status_text.innerHTML = text;
+		}
+
+	</script>
+
+	<style type="text/css">
+		.speedstyle{
+			height:40px;
+			width:40px;
+		}
+		.tab {
+			overflow: hidden;
+			border: 1px solid #ccc;
+			background-color: #f1f1f1;
+		}		
+		/* Style the buttons that are used to open the tab content */
+		.tab button {
+			background-color: inherit;
+			float: left;
+			border: none;
+			outline: none;
+			cursor: pointer;
+			padding: 14px 16px;
+			transition: 0.3s;
+		}
+
+		/* Change background color of buttons on hover */
+		.tab button:hover {
+			background-color: #ddd;
+		}
+
+		/* Create an active/current tablink class */
+		.tab button.active {
+			background-color: #ccc;
+		}
+
+		/* Style the tab content */
+		.tabcontent {
+			display: none;
+			padding: 6px 12px;
+			border: 1px solid #ccc;
+			border-top: none;
+		}
+
+		.status	{
+			border: 1px solid rgb(146, 146, 146);
+			background-color: rgb(230, 224, 224);
+		}
+
+		.status_text{
+			color: #000;
+		}
+
+		.test_buttons
+		{
+			/**/display: block;/**/
+			/*display: none;/**/
+		}
+		.test_panel
+		{
+			/*display: block;/**/
+			/**/display: none;/**/
+			/*border: thick double #32a1ce;*/
+		}
+		.paring_panel
+		{
+			/*visibility: hidden;*/
+			visibility: visible;
+			/*border: thick double #32a1ce;*/
+		}
+		.crypto_panel
+		{
+			/*visibility: hidden;*/
+			visibility: visible;
+			/*border: thick double #32a1ce;*/
+		}
+		.device_type
+		{
+			visibility: visible;
+		}
+		.crypto_fieldset
+		{
+			visibility: visible;
+		}
+		.support_caption
+		{
+			visibility: visible;
+			font-family: Arial, Helvetica, sans-serif;
+			font-weight: bold;
+		}
+		.crypto_label
+		{
+			visibility: visible;
+			font-family: Arial, Helvetica, sans-serif;
+		}
+		.crypto_help
+		{
+			visibility: visible;
+			font-family: Arial, Helvetica, sans-serif;
+			color: rgb(250, 9, 9);
+		}
+		.crypto_address
+		{
+			visibility: visible;
+			font-family: Arial, Helvetica, sans-serif;
+			font-weight: bold;
+			cursor:pointer;
+		}
+		html *
+		{
+			font-size: 1em;
+			color: #000;
+			font-family: Arial, Helvetica, sans-serif;
+		}		
+		.instruction
+		{
+			font-family: Arial, Helvetica, sans-serif;
+			font-weight: bold;
+		}
+		#dialog_overlay {
+			visibility: hidden;
+			position: absolute;
+			width: 400px;
+			height: 100px;
+			margin-top: 50%;
+			margin-bottom: 50%;
+			top: -50px; /* 100/2=50 */
+			margin-left: 50%;
+			margin-right: 50%;
+			left: -200px; /* 400/2=200 */
+			z-index: 10000000;
+			background-color:rgb(38, 100, 233);
+			text-align:center;
+		 }		
+		 .dialog_text
+		 {
+			font-family: Arial, Helvetica, sans-serif;
+			font-weight: bold;
+			color:rgb(250, 246, 19)
+		 }
+	</style>
+
+</head>
+
+<body>
+
+	<div id="dialog_overlay">
+		<div>
+			<p id="dialog_text" class="dialog_text">Content you want the user to see goes here.</p>
+		</div>
+	</div>
+
+	<div class="status">
+		<label id="status_label" class="status_text">
+			Status:
+		</label>
+		<label id="status_text" class="status_text">
+			Inactive
+		</label>
+	</div>
+	<div class="device_type">
+		<input type="radio" name="device_type" id="device_0">Device 0</input>
+		<input type="radio" name="device_type" id="device_1" checked="true">Device 1</input>
+	</div>
+	<div class="tab">
+		<button id="ProgramBtn" class="tablinks" onclick="openTab(event, 'Program')">Program</button>
+		<button id="ManualBtn" class="tablinks" onclick="openTab(event, 'Manual')">Manual</button>
+		<button id="InstructionBtn" class="tablinks" onclick="openTab(event, 'Instruction')">Instruction</button>
+		<button id="LogsBtn" class="tablinks" onclick="openTab(event, 'Logs')">Logs</button>
+		<button id="LinksBtn" class="tablinks" onclick="openTab(event, 'Links')">Links</button>
+	</div>	
+
+	<!-- Tab content -->
+	<div id="Program" class="tabcontent">
+		Program:<br/>
+		<textarea id="program" style="width:400px;height:100px;">s4 i1 d1m s5 i2 d1m s6 i3 d1m s7 d1m s8 d1m s9 d1m s10 d1m s11 d12m</textarea><br/>
+		<label>Legend: sN - set speed to N, iN - set incline to N, dNm - duration N minutes</label></br>
+		<label>Errors: </label><label id="lblProgramError">None</label></br>
+		<button onclick="run_program();">Run program</button>
+		<button onclick="check_program();">Check program</button>
+	</div>
+	
+	<div id="Manual" class="tabcontent">
+		<script>
+			tabManual = document.getElementById("Manual");
+			//speed
+			tabManual.appendChild(document.createTextNode("Speed:"));
+			tabManual.appendChild(document.createElement("br"));
+			for(let i=2; i<15; i++)
+			{
+				let btn = document.createElement("button");
+				btn.innerHTML = i;
+				btn.speed = i;
+				btn.onclick = function() { set_speed(this.speed); };
+				btn.classList.add('speedstyle');
+				tabManual.appendChild(btn);
+			}
+			tabManual.appendChild(document.createElement("br"));
+			//incline
+			tabManual.appendChild(document.createTextNode("Incline: "));
+			tabManual.appendChild(document.createElement("br"));
+			for(let i=0; i<20; i++)
+			{
+				let btn = document.createElement("button");
+				btn.innerHTML = i;
+				btn.incline = i;
+				btn.onclick = function() { set_incline(this.incline); };
+				btn.classList.add('speedstyle');
+				tabManual.appendChild(btn);
+			}
+			tabManual.appendChild(document.createElement("br"));
+		</script>
+		</div>
+	
+	<div id="Instruction" class="tabcontent">
+		<ol>
+			<li><label class="instruction">Choose the device type. Currently 'Device 0' and 'Device 1' are available. The default is 'Device 1'.</label></li>
+			<li><label class="instruction">Press 'Pair device' button.</label></li>
+			<li><label class="instruction">Enable bluetooth access if it is disabled.</label></li>
+			<li><label class="instruction">Choose the corect device in the list. My device name is 'I_IT'.</label></li>
+			<li><label class="instruction">Press the 'Connect' or 'Pair' button on the dialog.</label></li>
+			<li><label class="instruction">if the connection is succeeded then you have 6 seconds to press the 'Start' button on you device.</label></li>
+			<li><label class="instruction">Then you can use a 'Program' tab to start the program or a 'Manual' tab to control your device manually.</label></li>
+		</ol>
+	</div>
+
+	<div id="Logs" class="tabcontent">
+		<textarea id="txtarea" style="width:400px;height:400px;"></textarea><br/>
+		<button onclick="CopyText()">Copy text</button>
+	</div>
+
+	<div id="Links" class="tabcontent">
+		<a href="https://yvesdebeer.github.io/Treadmill-Bluetooth/">https://yvesdebeer.github.io/Treadmill-Bluetooth/</a></br>
+		<a href="https://taylorbowland.com/posts/treadmill-sending-data/">https://taylorbowland.com/posts/treadmill-sending-data/</a></br>
+		<a href="https://www.wireshark.org/">https://www.wireshark.org/</a></br>
+		<a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API">https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API</a></br>
+		<a href="https://stackoverflow.com/questions/50639978/where-is-bluetooth-hci-log-of-samsung-s8-android-8-0/71204942">https://stackoverflow.com/questions/50639978/where-is-bluetooth-hci-log-of-samsung-s8-android-8-0/71204942</a></br>
+		<a href="https://medium.com/@charlie.d.anderson/how-to-get-the-bluetooth-host-controller-interface-logs-from-a-modern-android-phone-d23bde00b9fa">https://medium.com/@charlie.d.anderson/how-to-get-the-bluetooth-host-controller-interface-logs-from-a-modern-android-phone-d23bde00b9fa</a></br>
+	</div>
+
+	<script>
+		openTab(null, "Program");
+	</script>
+
+	<div class="paring_panel">
+		<fieldset>
+			<legend>Paring:</legend>		
+			<button id="pair">Pair device</button>
+			<button onclick="stop_ping = true;">Stop ping</button>
+			<button onclick="stop_run();">Stop run</button><br/>
+		</fieldset>
+	</div>
+
+	<div class="test_panel">
+		<fieldset>
+			<legend>Test panel:</legend>		
+			<button class="test_buttons" onclick="log('Key attached');">Key attached</button>
+			<button class="test_buttons" onclick="log('Start pressed');">Start pressed</button>
+			<button class="test_buttons" onclick="log('Stop pressed');">Stop pressed</button>
+			<button class="test_buttons" onclick="log('Key detached');">Key detached</button>
+		</fieldset>
+	</div>
+
+	<div class="crypto_panel">
+		<fieldset class="crypto_fieldset">
+			<legend class="support_caption">Support the development please: </legend>		
+			<label class="crypto_label">
+				Bitcoin (BTC): <label class="crypto_address" onclick="crypto_click(event);">bc1q2slyvfjxhnp0r0caqxmw7jqzwv8gg59x6f9n80</label>
+			</label></br>
+			<label class="crypto_label">
+				Ethereum (ETH): <label class="crypto_address" onclick="crypto_click(event);">0x9DdbB3c5dA42dE767FF1F8fb779db6611Cbc0bd6</label>
+			</label></br>
+			<label class="crypto_label">
+				Tether (USDT ERC20!!!): <label class="crypto_address" onclick="crypto_click(event);">0x9DdbB3c5dA42dE767FF1F8fb779db6611Cbc0bd6</label>
+			</label></br>
+			<label class="crypto_label">
+				Tron (TRX): <label class="crypto_address" onclick="crypto_click(event);">TMndbKFw1gpWGXpe5rpgE8MqgaW42m2MCE</label>
+			</label></br>
+			<label class="crypto_label">
+				Tether (USDT TRC20!!!): <label class="crypto_address" onclick="crypto_click(event);">TMndbKFw1gpWGXpe5rpgE8MqgaW42m2MCE</label>
+			</label></br>
+			<label class="crypto_help">
+				Click on address to copy the address to clipboard.
+			</label>
+		</fieldset>
+	</div>
+
+
+</body>
+
+</html>
