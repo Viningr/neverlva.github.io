@@ -2,6 +2,7 @@
 iFit/NordicTrack treadmill bluetooth device manager
 
 This is my attempt to create a simple web application to control the iFit/NordicTrack treadmill via bluetooth.
+To access the web application use the following link: [https://neverlva.github.io](https://neverlva.github.io)
 
 ## Support the development please:
 - Bitcoin (BTC): **bc1q2slyvfjxhnp0r0caqxmw7jqzwv8gg59x6f9n80**
