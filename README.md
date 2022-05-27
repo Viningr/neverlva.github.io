@@ -1,7 +1,7 @@
 # neverlva.github.io
 ## iFit/NordicTrack treadmill bluetooth device manager. Control your threadmill with the web application from web browser on your phone or PC.
 
-This is my attempt to create a simple web application to control the iFit/NordicTrack treadmill via bluetooth directcly from web browser on your phone or PC.
+This is my attempt to create a simple web application to control the iFit/NordicTrack treadmill via bluetooth directly from web browser on your phone or PC.
 To access the web application use the following link: [https://neverlva.github.io](https://neverlva.github.io)
 
 ## Support the development please:
